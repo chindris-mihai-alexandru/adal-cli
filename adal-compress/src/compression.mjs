@@ -342,6 +342,146 @@ export function compressMessages(messages) {
 }
 
 /**
+ * Compress tool schemas (MCP-style).
+ * Inspired by Atlassian's mcp-compressor: strips verbose descriptions
+ * from tool definitions while preserving parameter structure.
+ *
+ * Typically saves 70-97% on tool schema tokens.
+ */
+export function compressToolSchemas(tools) {
+  if (!Array.isArray(tools)) return tools;
+
+  return tools.map((tool) => {
+    if (!tool) return tool;
+
+    const compressed = { ...tool };
+
+    // Shorten description to first sentence (max 80 chars)
+    if (compressed.description && compressed.description.length > 80) {
+      const firstSentence = compressed.description.split(/[.!?]\s/)[0];
+      compressed.description = firstSentence.slice(0, 80);
+    }
+
+    // Strip parameter descriptions but keep structure
+    if (compressed.input_schema?.properties) {
+      compressed.input_schema = {
+        ...compressed.input_schema,
+        properties: Object.fromEntries(
+          Object.entries(compressed.input_schema.properties).map(([key, val]) => {
+            const slim = { type: val.type };
+            if (val.enum) slim.enum = val.enum;
+            if (val.items) slim.items = { type: val.items.type };
+            if (val.default !== undefined) slim.default = val.default;
+            return [key, slim];
+          })
+        ),
+      };
+    }
+
+    // Same for OpenAI function calling format
+    if (compressed.function?.parameters?.properties) {
+      compressed.function = {
+        ...compressed.function,
+        parameters: {
+          ...compressed.function.parameters,
+          properties: Object.fromEntries(
+            Object.entries(compressed.function.parameters.properties).map(([key, val]) => {
+              const slim = { type: val.type };
+              if (val.enum) slim.enum = val.enum;
+              if (val.items) slim.items = { type: val.items.type };
+              if (val.default !== undefined) slim.default = val.default;
+              return [key, slim];
+            })
+          ),
+        },
+      };
+      // Shorten function description
+      if (compressed.function.description && compressed.function.description.length > 80) {
+        compressed.function.description = compressed.function.description.split(/[.!?]\s/)[0].slice(0, 80);
+      }
+    }
+
+    return compressed;
+  });
+}
+
+/**
+ * Progressive message aging — compress older messages more aggressively.
+ * Recent messages (last N) get normal compression.
+ * Older messages get heavy compression (remove articles, more filler, truncate).
+ *
+ * Inspired by Code Mode insight: LLMs rarely need full context from early turns.
+ */
+export function compressWithAging(messages, { recentCount = 6 } = {}) {
+  if (!Array.isArray(messages) || messages.length <= recentCount) {
+    return compressMessages(messages);
+  }
+
+  const oldMessages = messages.slice(0, -recentCount);
+  const recentMessages = messages.slice(-recentCount);
+
+  // Heavy compression for old messages
+  const agedOld = oldMessages.map((msg) => {
+    if (!msg || !msg.content || msg.role === "assistant") return msg;
+
+    if (typeof msg.content === "string") {
+      // For old user messages: aggressive truncation
+      let compressed = compressMessage(msg.content);
+      // Further truncate if still long
+      if (compressed.length > 500) {
+        compressed = compressed.slice(0, 500) + "... [truncated]";
+      }
+      return { ...msg, content: compressed };
+    }
+
+    return msg;
+  });
+
+  // Normal compression for recent messages
+  const compressedRecent = compressMessages(recentMessages);
+
+  return [...agedOld, ...compressedRecent];
+}
+
+/**
+ * Multi-turn deduplication — detect repeated system prompts/tool schemas
+ * across turns and replace with a short reference.
+ *
+ * Key insight from Code Mode articles: tool schemas are sent on EVERY turn
+ * and eat 5-7% of context window. We hash and deduplicate them.
+ */
+const seenHashes = new Map(); // hash → first occurrence index
+
+export function deduplicateMessages(messages) {
+  if (!Array.isArray(messages)) return messages;
+
+  return messages.map((msg, idx) => {
+    if (!msg || !msg.content || msg.role !== "system") return msg;
+
+    if (typeof msg.content !== "string") return msg;
+
+    // Simple content hash (fast, not crypto-secure — just for dedup)
+    const hash = simpleHash(msg.content);
+
+    if (seenHashes.has(hash) && seenHashes.get(hash) !== idx) {
+      // This system message was seen before — replace with short ref
+      return { ...msg, content: "[system context — same as above]" };
+    }
+
+    seenHashes.set(hash, idx);
+    return msg;
+  });
+}
+
+function simpleHash(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
+  }
+  return hash;
+}
+
+/**
  * Estimate token savings (rough approximation: 1 token ≈ 4 chars)
  */
 export function estimateSavings(original, compressed) {

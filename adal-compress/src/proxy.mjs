@@ -30,7 +30,14 @@ import { createServer } from "node:http";
 import https from "node:https";
 import http from "node:http";
 import { URL } from "node:url";
-import { compressMessages, compressProse, estimateSavings } from "./compression.mjs";
+import {
+  compressMessages,
+  compressProse,
+  compressToolSchemas,
+  compressWithAging,
+  deduplicateMessages,
+  estimateSavings,
+} from "./compression.mjs";
 
 const REAL_BACKEND = "https://adal.sylph.ai";
 const COMPRESSIBLE_PATHS = [
@@ -83,12 +90,26 @@ function compressRequestBody(bodyStr) {
   try {
     const body = JSON.parse(bodyStr);
 
+    // Compress tool schemas if present
+    if (body.tools && Array.isArray(body.tools)) {
+      body.tools = compressToolSchemas(body.tools);
+    }
+
     // Anthropic Messages API format
     if (body.messages && Array.isArray(body.messages)) {
       const originalJson = JSON.stringify(body.messages);
-      body.messages = compressMessages(body.messages);
-      const compressedJson = JSON.stringify(body.messages);
 
+      // Apply progressive aging for long conversations
+      if (body.messages.length > 8) {
+        body.messages = compressWithAging(body.messages);
+      } else {
+        body.messages = compressMessages(body.messages);
+      }
+
+      // Deduplicate repeated system prompts
+      body.messages = deduplicateMessages(body.messages);
+
+      const compressedJson = JSON.stringify(body.messages);
       const savings = estimateSavings(originalJson, compressedJson);
       return {
         body: JSON.stringify(body),

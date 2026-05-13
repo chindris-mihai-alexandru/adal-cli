@@ -4,6 +4,8 @@ import {
   compressProse,
   compressToolOutput,
   compressMessages,
+  compressToolSchemas,
+  compressWithAging,
   estimateSavings,
 } from "./compression.mjs";
 
@@ -171,6 +173,74 @@ describe("compressMessages", () => {
     const result = compressMessages(messages);
     assert.ok(result[0].content[0].text.length < messages[0].content[0].text.length);
     assert.equal(result[0].content[1].type, "image_url"); // Untouched
+  });
+});
+
+describe("compressToolSchemas", () => {
+  test("shortens tool descriptions", () => {
+    const tools = [{
+      name: "get_weather",
+      description: "This tool retrieves the current weather information for a specified location including temperature, humidity, wind speed, and atmospheric pressure. It supports cities worldwide and returns data in metric or imperial units.",
+      input_schema: {
+        type: "object",
+        properties: {
+          location: { type: "string", description: "The city and state, e.g. San Francisco, CA" },
+          units: { type: "string", enum: ["metric", "imperial"], description: "The unit system to use for temperature" },
+        },
+        required: ["location"],
+      },
+    }];
+    const result = compressToolSchemas(tools);
+    assert.ok(result[0].description.length <= 80);
+    assert.ok(result[0].input_schema.properties.location.type === "string");
+    assert.ok(!result[0].input_schema.properties.location.description); // Stripped
+    assert.deepEqual(result[0].input_schema.properties.units.enum, ["metric", "imperial"]);
+  });
+
+  test("handles OpenAI function format", () => {
+    const tools = [{
+      type: "function",
+      function: {
+        name: "search",
+        description: "Search the codebase for files matching a query pattern. Supports regex and glob patterns for flexible searching across all project files.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string", description: "The search query or pattern to match" },
+          },
+        },
+      },
+    }];
+    const result = compressToolSchemas(tools);
+    assert.ok(result[0].function.description.length <= 80);
+    assert.ok(!result[0].function.parameters.properties.query.description);
+  });
+});
+
+describe("compressWithAging", () => {
+  test("truncates old messages in long conversations", () => {
+    const messages = [];
+    // 10 old messages with long content
+    for (let i = 0; i < 10; i++) {
+      messages.push({ role: "user", content: "x".repeat(800) });
+      messages.push({ role: "assistant", content: "response " + i });
+    }
+    const result = compressWithAging(messages, { recentCount: 6 });
+    // Old messages (first 14) should be truncated
+    const oldUserMsgs = result.slice(0, 14).filter(m => m.role === "user");
+    assert.ok(oldUserMsgs.every(m => m.content.length <= 515)); // 500 + "... [truncated]"
+    // Recent messages stay longer
+    const recentUserMsgs = result.slice(-6).filter(m => m.role === "user");
+    assert.ok(recentUserMsgs.length > 0);
+  });
+
+  test("short conversations pass through normally", () => {
+    const messages = [
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "hi there" },
+    ];
+    const result = compressWithAging(messages);
+    assert.equal(result.length, 2);
   });
 });
 
