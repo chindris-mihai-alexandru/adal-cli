@@ -157,8 +157,10 @@ function forwardRequest(req, body, res) {
     },
   };
 
-  // Remove proxy-specific headers
+  // Remove headers that are stale after body rewrite or proxy-specific
   delete options.headers["connection"];
+  delete options.headers["accept-encoding"];
+  delete options.headers["transfer-encoding"];
 
   const proxyReq = transport.request(options, (proxyRes) => {
     res.writeHead(proxyRes.statusCode, proxyRes.headers);
