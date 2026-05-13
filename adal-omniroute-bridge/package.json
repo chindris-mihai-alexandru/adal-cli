@@ -1,0 +1,18 @@
+{
+  "name": "adal-omniroute-bridge",
+  "version": "1.0.0",
+  "description": "Bridge AdaL CLI to OmniRoute for token compression and cost optimization",
+  "type": "module",
+  "bin": {
+    "adal-omniroute": "./bin/adal-omniroute.mjs"
+  },
+  "scripts": {
+    "start": "node bin/adal-omniroute.mjs",
+    "test": "node test/verify.mjs"
+  },
+  "dependencies": {
+    "http-proxy": "^1.18.1"
+  },
+  "keywords": ["adal", "omniroute", "proxy", "token-compression", "ai-gateway"],
+  "license": "MIT"
+}
