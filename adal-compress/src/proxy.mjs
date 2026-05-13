@@ -47,6 +47,15 @@ const COMPRESSIBLE_PATHS = [
   "/api/v1/chat",
 ];
 
+// Auth/browser paths that must go directly to the real domain (not proxied)
+const AUTH_REDIRECT_PATHS = [
+  "/sign-up",
+  "/sign-in",
+  "/auth/",
+  "/sso-callback",
+  "/oauth",
+];
+
 // Stats tracking
 let stats = {
   totalRequests: 0,
@@ -190,6 +199,18 @@ export function createProxy(port, options = {}) {
 
   const server = createServer(async (req, res) => {
     stats.totalRequests++;
+
+    // Auth/browser requests: redirect to real domain (Clerk needs real origin)
+    const isAuthPath = AUTH_REDIRECT_PATHS.some((p) => req.url.includes(p));
+    if (isAuthPath) {
+      const realUrl = new URL(req.url, REAL_BACKEND);
+      if (verbose) {
+        console.log(`  🔑 Auth redirect: ${req.url} → ${realUrl.href}`);
+      }
+      res.writeHead(302, { Location: realUrl.href });
+      res.end();
+      return;
+    }
 
     // Collect request body
     const chunks = [];
