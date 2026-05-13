@@ -39,7 +39,7 @@ import {
   estimateSavings,
 } from "./compression.mjs";
 
-const REAL_BACKEND = "https://adal.sylph.ai";
+let REAL_BACKEND = "https://adal.sylph.ai";
 const COMPRESSIBLE_PATHS = [
   "/v1/chat/completions",
   "/v1/messages",
@@ -182,6 +182,9 @@ function forwardRequest(req, body, res) {
  */
 export function createProxy(port, options = {}) {
   const { verbose = false, realBackendUrl = REAL_BACKEND } = options;
+
+  // Override module-level backend URL for this proxy instance
+  REAL_BACKEND = realBackendUrl;
 
   const server = createServer(async (req, res) => {
     stats.totalRequests++;
