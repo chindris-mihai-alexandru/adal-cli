@@ -17,8 +17,8 @@
 import { spawn } from "node:child_process";
 import { createProxy, getStats } from "../src/proxy.mjs";
 
-const PROXY_PORT = 19876;
-const VERSION = "1.0.0";
+const PROXY_PORT = 0; // OS assigns a free port — allows multiple sessions
+const VERSION = "1.0.1";
 
 function parseArgs() {
   const args = process.argv.slice(2);
@@ -99,11 +99,13 @@ async function main() {
     return;
   }
 
-  // Start compression proxy
-  let proxy;
+  // Start compression proxy (port 0 = OS picks a free port)
+  let proxy, assignedPort;
   try {
-    proxy = createProxy(PROXY_PORT, { verbose });
-    console.log(`   ✅ Compression proxy active (port ${PROXY_PORT})`);
+    const result = await createProxy(PROXY_PORT, { verbose });
+    proxy = result.server;
+    assignedPort = result.port;
+    console.log(`   ✅ Compression proxy active (port ${assignedPort})`);
   } catch (e) {
     console.error(`   ❌ Failed to start proxy: ${e.message}`);
     console.error("   Falling back to normal adal...\n");
@@ -133,7 +135,7 @@ async function main() {
   // Launch AdaL with ADAL_APP_URL pointing to our proxy
   const env = {
     ...process.env,
-    ADAL_APP_URL: `http://localhost:${PROXY_PORT}`,
+    ADAL_APP_URL: `http://localhost:${assignedPort}`,
   };
 
   const adalProcess = spawn("adal", config.adalArgs, {

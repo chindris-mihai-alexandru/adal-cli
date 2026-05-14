@@ -242,11 +242,14 @@ export function createProxy(port, options = {}) {
     });
   });
 
-  server.listen(port, "127.0.0.1", () => {
-    if (verbose) {
-      console.log(`   ✅ Compression proxy on :${port} → ${realBackendUrl}`);
-    }
+  return new Promise((resolve, reject) => {
+    server.on("error", reject);
+    server.listen(port, "127.0.0.1", () => {
+      const assignedPort = server.address().port;
+      if (verbose) {
+        console.log(`   ✅ Compression proxy on :${assignedPort} → ${realBackendUrl}`);
+      }
+      resolve({ server, port: assignedPort });
+    });
   });
-
-  return server;
 }
