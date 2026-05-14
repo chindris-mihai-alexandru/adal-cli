@@ -1,6 +1,6 @@
 {
   "name": "adal-compress",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Transparent token compression proxy for AdaL CLI — saves 30-70% on eligible tokens",
   "type": "module",
   "bin": {
