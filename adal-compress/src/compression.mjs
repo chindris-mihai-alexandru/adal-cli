@@ -450,10 +450,11 @@ export function compressWithAging(messages, { recentCount = 6 } = {}) {
  * Key insight from Code Mode articles: tool schemas are sent on EVERY turn
  * and eat 5-7% of context window. We hash and deduplicate them.
  */
-const seenHashes = new Map(); // hash → first occurrence index
-
 export function deduplicateMessages(messages) {
   if (!Array.isArray(messages)) return messages;
+
+  // Scoped per-call — only deduplicates within this messages array
+  const seenHashes = new Map();
 
   return messages.map((msg, idx) => {
     if (!msg || !msg.content || msg.role !== "system") return msg;
