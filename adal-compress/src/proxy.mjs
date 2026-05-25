@@ -198,6 +198,13 @@ export function createProxy(port, options = {}) {
   REAL_BACKEND = realBackendUrl;
 
   const server = createServer(async (req, res) => {
+    // Health check endpoint for port conflict detection
+    if (req.url === "/health" && req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "ok", service: "adal-compress", pid: process.pid }));
+      return;
+    }
+
     stats.totalRequests++;
 
     // Auth/browser requests: redirect to real domain (Clerk needs real origin)

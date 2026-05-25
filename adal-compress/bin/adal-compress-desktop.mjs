@@ -170,7 +170,7 @@ async function main() {
     return;
   }
 
-  // Start compression proxy
+  // Start compression proxy (with port conflict handling)
   let proxy, assignedPort;
   try {
     const result = await createProxy(config.port, { verbose });
@@ -179,8 +179,32 @@ async function main() {
     console.log(`   ✅ Compression proxy active (port ${assignedPort})`);
     console.log(`   📍 ADAL_APP_URL=http://localhost:${assignedPort}`);
   } catch (e) {
-    console.error(`   ❌ Failed to start proxy: ${e.message}`);
-    process.exit(1);
+    if (e.code === "EADDRINUSE" && config.port !== 0) {
+      // Port already in use — check if it's already our proxy
+      console.log(`   ℹ️  Port ${config.port} already in use.`);
+      try {
+        const res = await fetch(`http://localhost:${config.port}/health`).catch(() => null);
+        if (res) {
+          console.log(`   ✅ Existing proxy detected on port ${config.port} — reusing.`);
+          assignedPort = config.port;
+          // Skip starting a new proxy, just write PID file and continue
+        } else {
+          // Port taken by something else — fall back to random port
+          console.log(`   ⚠️  Port taken by another process. Trying random port...`);
+          const result = await createProxy(0, { verbose });
+          proxy = result.server;
+          assignedPort = result.port;
+          console.log(`   ✅ Compression proxy active (port ${assignedPort})`);
+          console.log(`   📍 ADAL_APP_URL=http://localhost:${assignedPort}`);
+        }
+      } catch {
+        console.error(`   ❌ Failed to start proxy: ${e.message}`);
+        process.exit(1);
+      }
+    } else {
+      console.error(`   ❌ Failed to start proxy: ${e.message}`);
+      process.exit(1);
+    }
   }
 
   // Write PID file for other tools to discover
