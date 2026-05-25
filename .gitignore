@@ -21,3 +21,7 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# Agent tooling (developer-local, auto-generated)
+.agents/
+skills-lock.json
