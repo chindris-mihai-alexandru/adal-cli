@@ -4,7 +4,9 @@
   "description": "Transparent token compression proxy for AdaL CLI — saves 30-70% on eligible tokens",
   "type": "module",
   "bin": {
-    "adal-compress": "./bin/adal-compress.mjs"
+    "adal-compress": "./bin/adal-compress.mjs",
+    "adal-compress-desktop": "./bin/adal-compress-desktop.mjs",
+    "compress-memory": "./bin/compress-memory.mjs"
   },
   "scripts": {
     "start": "node bin/adal-compress.mjs",
