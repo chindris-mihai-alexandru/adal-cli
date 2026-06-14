@@ -311,6 +311,58 @@ export function isToolOutputContent(text) {
 }
 
 /**
+ * Generate a 3-emoji triadic signature for content based on its type.
+ * Inspired by Signal Zero's Peircean triads — emojis activate dense
+ * semantic clusters in LLM latent space, giving the model a "feel"
+ * for what the content represents without reading it.
+ *
+ * Returns: { triad: string, label: string }
+ */
+export function getContentTriad(text) {
+  if (!text || typeof text !== "string") return { triad: "📋💬📌", label: "content" };
+
+  // Priority order matches TOOL_OUTPUT_RULES: most specific patterns first
+  // Git diff
+  if (/^diff --git|^@@.*@@/m.test(text)) {
+    return { triad: "📝✏️🔀", label: "diff" };
+  }
+  // Git status
+  if (/^(?:On branch|Changes|Untracked|modified:|new file:)/m.test(text)) {
+    return { triad: "📂🔄📋", label: "git status" };
+  }
+  // npm/pip output (exclude errors — those should get error triad)
+  if (/^(?:npm|pip|added|removed|up to date|Successfully installed)/m.test(text) && !/ERR!|error/i.test(text)) {
+    return { triad: "📦⬇️✅", label: "install" };
+  }
+  // Test output (requires test-specific context, not just "failed" in prose)
+  if (/(?:^(?:PASS|FAIL)\b|^Tests?:|✓|✗|tests?\s+(?:passed|failed)|\d+\s+(?:passing|failing)|^\s*\d+\s+(?:pass|fail|skip))/im.test(text)) {
+    return { triad: "🧪✅📊", label: "tests" };
+  }
+  // Error/traceback (after tests — catches genuine errors without test markers)
+  if (/(?:error|Error|ERR!|FAILURE|\bfailed\b|traceback|TypeError|ReferenceError|SyntaxError|panic|refused|denied)/m.test(text)) {
+    return { triad: "❌🐛📍", label: "error" };
+  }
+  // File listing (paths)
+  if (/^[^\s{(;]+\.[a-z]{1,5}$/m.test(text) && text.split("\n").length > 5) {
+    return { triad: "📁📋🔍", label: "file listing" };
+  }
+  // Grep results
+  if (/^[^\s]+:\d+:/m.test(text)) {
+    return { triad: "🔎📍💡", label: "search results" };
+  }
+  // Code/source (requires code syntax: identifier+paren/equals after keyword)
+  if (/(?:function\s+\w+\s*\(|def \w+|fn \w+|(?:const|let|var)\s+\w+\s*=|class \w+|^import |^export )/m.test(text)) {
+    return { triad: "🔧💻⚙️", label: "source code" };
+  }
+  // Config/JSON-like (word boundaries prevent matching "export", "localhost" in prose)
+  if (/^\s*[{[]|":\s*["{[\d]|\bport\b|\bhost\b|\bconfig\b/m.test(text)) {
+    return { triad: "⚙️📄🔒", label: "config" };
+  }
+  // Default
+  return { triad: "📋💬📌", label: "content" };
+}
+
+/**
  * Compress tool output (git, npm, test results, file listings).
  * Uses pattern detection to apply appropriate compression strategy.
  */

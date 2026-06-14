@@ -37,6 +37,7 @@ import {
   compressWithAging,
   deduplicateMessages,
   estimateSavings,
+  getContentTriad,
   isToolOutputContent,
   simpleHash,
 } from "./compression.mjs";
@@ -101,13 +102,16 @@ function deduplicateToolResults(messages) {
       // Guard against hash collisions: verify content length matches
       if (Math.abs(cached.len - content.length) < 5) {
         cached.ts = Date.now();
-        return { ...msg, content: `[repeated content — same as earlier: "${cached.firstLine}..."]` };
+        // Triadic symbolic reference — compact + semantically dense
+        return { ...msg, content: `[§ ${cached.triad} ${cached.label}, ${cached.len} chars, seen earlier]` };
       }
     }
 
-    // Store in cache
+    // Store in cache with triadic signature
+    const { triad, label } = getContentTriad(content);
     recentContentHashes.set(hash, {
-      firstLine: content.slice(0, 60).replace(/\n/g, " "),
+      triad,
+      label,
       len: content.length,
       ts: Date.now(),
     });
@@ -232,7 +236,7 @@ function compressRequestBody(bodyStr) {
       body.messages.forEach((m, i) => {
         if (i >= msgMeta.length) return;
         // Skip deduped messages — their savings already counted in dedupSaved
-        if (typeof m.content === "string" && m.content.startsWith("[repeated content")) return;
+        if (typeof m.content === "string" && (m.content.startsWith("[§ ") || m.content.startsWith("[repeated content"))) return;
         if (!msgMeta[i].isToolOutput || !m.content) return;
         const newLen = typeof m.content === "string" ? m.content.length : 0;
         const saved = Math.ceil((msgMeta[i].len - newLen) / 4);
