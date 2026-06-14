@@ -126,9 +126,9 @@ Tests: 3 passed, 3 total`;
     const input = lines.join("\n");
     const result = compressToolOutput(input);
     assert.ok(result.includes("file0.js"));
-    assert.ok(result.includes("file29.js"));
-    assert.ok(result.includes("70 more entries"));
-    assert.ok(!result.includes("file30.js"));
+    assert.ok(result.includes("file19.js"));
+    assert.ok(result.includes("80 more entries"));
+    assert.ok(!result.includes("file20.js"));
   });
 });
 

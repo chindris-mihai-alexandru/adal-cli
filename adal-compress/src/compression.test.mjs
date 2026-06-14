@@ -218,20 +218,44 @@ describe("compressToolSchemas", () => {
 });
 
 describe("compressWithAging", () => {
-  test("truncates old messages in long conversations", () => {
+  test("ages tool exploration outputs aggressively", () => {
     const messages = [];
-    // 10 old messages with long content
+    // Old messages with tool output (file listing pattern)
     for (let i = 0; i < 10; i++) {
-      messages.push({ role: "user", content: "x".repeat(800) });
+      const fileList = Array.from({ length: 25 }, (_, j) => `src/file${j}.js`).join("\n");
+      messages.push({ role: "user", content: fileList });
       messages.push({ role: "assistant", content: "response " + i });
     }
     const result = compressWithAging(messages, { recentCount: 6 });
-    // Old messages (first 14) should be truncated
+    // Old tool-exploration messages should be capped at 200 chars + "... [aged]"
     const oldUserMsgs = result.slice(0, 14).filter(m => m.role === "user");
-    assert.ok(oldUserMsgs.every(m => m.content.length <= 515)); // 500 + "... [truncated]"
-    // Recent messages stay longer
-    const recentUserMsgs = result.slice(-6).filter(m => m.role === "user");
-    assert.ok(recentUserMsgs.length > 0);
+    assert.ok(oldUserMsgs.every(m => m.content.length <= 215));
+  });
+
+  test("preserves error messages with higher cap", () => {
+    const messages = [];
+    for (let i = 0; i < 10; i++) {
+      messages.push({ role: "user", content: "TypeError: Cannot read property 'id' of null\n" + "x".repeat(900) });
+      messages.push({ role: "assistant", content: "response " + i });
+    }
+    const result = compressWithAging(messages, { recentCount: 6 });
+    const oldUserMsgs = result.slice(0, 14).filter(m => m.role === "user");
+    // Errors get 800 char cap (not 200 or 500)
+    assert.ok(oldUserMsgs.every(m => m.content.length <= 815)); // 800 + "... [truncated]"
+    assert.ok(oldUserMsgs.every(m => m.content.length > 200)); // NOT aggressively truncated
+  });
+
+  test("user instructions get prose compression only, no truncation", () => {
+    const messages = [];
+    for (let i = 0; i < 10; i++) {
+      messages.push({ role: "user", content: "I think we should basically implement the feature in order to fix the problem. ".repeat(10) });
+      messages.push({ role: "assistant", content: "response " + i });
+    }
+    const result = compressWithAging(messages, { recentCount: 6 });
+    const oldUserMsgs = result.slice(0, 14).filter(m => m.role === "user");
+    // Should be compressed (filler removed) but not truncated
+    assert.ok(oldUserMsgs.every(m => m.content.length < 800)); // Compressed from original
+    assert.ok(oldUserMsgs.every(m => !m.content.includes("[truncated]") && !m.content.includes("[aged]")));
   });
 
   test("short conversations pass through normally", () => {
@@ -241,6 +265,130 @@ describe("compressWithAging", () => {
     ];
     const result = compressWithAging(messages);
     assert.equal(result.length, 2);
+  });
+
+  test("tool output exactly at 200 chars is NOT truncated with [aged] suffix", () => {
+    const messages = [];
+    // Create a tool-exploration message that compresses to exactly 200 chars
+    const fileList = Array.from({ length: 25 }, (_, j) => `f${j}.js`).join("\n");
+    for (let i = 0; i < 10; i++) {
+      messages.push({ role: "user", content: fileList });
+      messages.push({ role: "assistant", content: "r" });
+    }
+    const result = compressWithAging(messages, { recentCount: 4 });
+    const oldUserMsgs = result.slice(0, 16).filter(m => m.role === "user");
+    // Messages ≤200 chars should NOT have [aged] suffix
+    for (const m of oldUserMsgs) {
+      if (m.content.length <= 200) {
+        assert.ok(!m.content.includes("[aged]"));
+      }
+    }
+  });
+
+  test("assistant messages are never aged regardless of content", () => {
+    const messages = [];
+    for (let i = 0; i < 10; i++) {
+      messages.push({ role: "user", content: "short" });
+      messages.push({ role: "assistant", content: "x".repeat(2000) });
+    }
+    const result = compressWithAging(messages, { recentCount: 4 });
+    const oldAssistantMsgs = result.slice(0, 16).filter(m => m.role === "assistant");
+    // Assistant messages must remain untouched
+    assert.ok(oldAssistantMsgs.every(m => m.content.length === 2000));
+  });
+});
+
+describe("compressMessages — system message handling", () => {
+  test("second system message gets full prose compression", () => {
+    const messages = [
+      { role: "system", content: "You are a helpful assistant. In order to help users, please note that it is important to note that you should respond clearly." },
+      { role: "system", content: "I think the user basically wants us to provide assistance in order to achieve their goals." },
+      { role: "user", content: "hello" },
+    ];
+    const result = compressMessages(messages);
+    // First system: only replacements ("In order to" → "to"), keeps fillers like "please note that"
+    assert.ok(result[0].content.includes("helpful assistant"));
+    assert.ok(result[0].content.includes("please note"));
+    // Second system: full compressProse removes "I think", "basically", and replaces "in order to"
+    assert.ok(!result[1].content.includes("I think"));
+    assert.ok(!result[1].content.includes("basically"));
+    assert.ok(!result[1].content.includes("in order to"));
+  });
+
+  test("multimodal content passes through without error", () => {
+    const messages = [
+      { role: "system", content: "You are helpful." },
+      { role: "user", content: [
+        { type: "text", text: "I think this is basically a test in order to verify things work" },
+        { type: "image_url", image_url: { url: "data:image/png;base64,abc" } },
+      ]},
+    ];
+    const result = compressMessages(messages);
+    // Text part should be compressed
+    assert.ok(!result[1].content[0].text.includes("I think"));
+    assert.ok(!result[1].content[0].text.includes("basically"));
+    // Image part should be unchanged
+    assert.equal(result[1].content[1].type, "image_url");
+    assert.equal(result[1].content[1].image_url.url, "data:image/png;base64,abc");
+  });
+});
+
+describe("compressToolOutput — graduated rules", () => {
+  test("git diff: large diffs (>300 changed lines) produce per-file summary", () => {
+    // Generate a diff with >300 actual changes (not counting --- or +++ headers)
+    let diff = "";
+    for (let i = 0; i < 60; i++) {
+      diff += `diff --git a/file${i}.js b/file${i}.js\n`;
+      diff += `--- a/file${i}.js\n`;
+      diff += `+++ b/file${i}.js\n`;
+      diff += `@@ -1,5 +1,10 @@\n`;
+      for (let j = 0; j < 6; j++) {
+        diff += `+added line ${j}\n`;
+        diff += `-removed line ${j}\n`;
+      }
+    }
+    const result = compressToolOutput(diff);
+    assert.ok(result.includes("diff summary"));
+    assert.ok(result.includes("file0.js"));
+    assert.ok(result.includes("file59.js"));
+    // Should NOT count --- and +++ as changes
+    assert.ok(!result.includes("(+7/")); // Would be 7 if +++ counted
+    assert.ok(result.includes("(+6/-6)")); // Correct: 6 additions, 6 deletions per file
+  });
+
+  test("git diff: small diffs (<= 300 changed lines) keep full output", () => {
+    const diff = `diff --git a/file.js b/file.js
+--- a/file.js
++++ b/file.js
+@@ -1,3 +1,3 @@
++new line
+-old line`;
+    const result = compressToolOutput(diff);
+    assert.ok(result.includes("+new line"));
+    assert.ok(result.includes("-old line"));
+    assert.ok(!result.includes("diff summary"));
+  });
+
+  test("grep output: caps at 10 matches", () => {
+    const lines = Array.from({ length: 20 }, (_, i) => `src/file${i}.js:${i + 1}: match content here`);
+    const input = lines.join("\n");
+    const result = compressToolOutput(input);
+    assert.ok(result.includes("src/file0.js:1:"));
+    assert.ok(result.includes("src/file9.js:10:"));
+    assert.ok(result.includes("10 more matches"));
+    assert.ok(!result.includes("src/file10.js"));
+  });
+
+  test("large file content: keeps head + tail", () => {
+    // Use content that won't trigger grep/diff/test/npm/ls rules
+    const lines = Array.from({ length: 200 }, (_, i) => `export function handler${i}(req, res) { return res.json({ ok: true }); }`);
+    const input = lines.join("\n");
+    const result = compressToolOutput(input);
+    assert.ok(result.includes("handler0"));
+    assert.ok(result.includes("handler29"));
+    assert.ok(result.includes("lines omitted"));
+    assert.ok(result.includes("handler199"));
+    assert.ok(!result.includes("handler30"));
   });
 });
 

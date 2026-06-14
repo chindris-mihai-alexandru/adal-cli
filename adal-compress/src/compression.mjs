@@ -103,7 +103,7 @@ const TRAILING_SPACE = /[ \t]+$/gm;
 // --- RTK-inspired tool output compression ---
 
 const TOOL_OUTPUT_RULES = [
-  // Git diff: Remove unchanged context lines, keep only +/- lines and headers
+  // Git diff: Remove context lines; if >300 changed lines, summarize per-file
   {
     detect: /^diff --git|^@@.*@@/m,
     compress: (text) => {
@@ -120,7 +120,31 @@ const TOOL_OUTPUT_RULES = [
         } else if (inHunk && (line.startsWith("+") || line.startsWith("-"))) {
           kept.push(line);
         }
-        // Skip context lines (no prefix) — LLM can infer from hunk headers
+      }
+      // If still too large after stripping context, produce per-file summary
+      // Exclude --- and +++ header lines from changed line count
+      const changedLines = kept.filter(l =>
+        (l.startsWith("+") && !l.startsWith("+++")) ||
+        (l.startsWith("-") && !l.startsWith("---"))
+      );
+      if (changedLines.length > 300) {
+        const files = new Map();
+        let currentFile = "(unknown)";
+        for (const line of kept) {
+          if (line.startsWith("diff --git")) {
+            const match = line.match(/b\/(.+)$/);
+            currentFile = match ? match[1] : "(unknown)";
+            if (!files.has(currentFile)) files.set(currentFile, { add: 0, del: 0 });
+          } else if (line.startsWith("+") && !line.startsWith("+++")) {
+            if (files.has(currentFile)) files.get(currentFile).add++;
+          } else if (line.startsWith("-") && !line.startsWith("---")) {
+            if (files.has(currentFile)) files.get(currentFile).del++;
+          }
+        }
+        const summary = [...files.entries()]
+          .map(([f, c]) => `  ${f} (+${c.add}/-${c.del})`)
+          .join("\n");
+        return `diff summary (${changedLines.length} changed lines across ${files.size} files):\n${summary}`;
       }
       return kept.join("\n");
     },
@@ -179,16 +203,43 @@ const TOOL_OUTPUT_RULES = [
       return kept.join("\n");
     },
   },
-  // ls/find output: Limit to first 30 entries + count
+  // ls/find output: Limit to first 20 entries + count
+  // Heuristic: lines are short, path-like (no code syntax like {, (, =, ;)
   {
     detect: (text) => {
       const lines = text.trim().split("\n");
-      return lines.length > 30 && lines.every(l => l.length < 200 && !l.includes("  "));
+      return lines.length > 20 && lines.every(l =>
+        l.length < 200 && !l.includes("  ") && !l.includes("{") && !l.includes("(") && !l.includes(";")
+      );
     },
     compress: (text) => {
       const lines = text.trim().split("\n");
-      if (lines.length <= 30) return text;
-      return lines.slice(0, 30).join("\n") + `\n... (${lines.length - 30} more entries, ${lines.length} total)`;
+      if (lines.length <= 20) return text;
+      return lines.slice(0, 20).join("\n") + `\n... (${lines.length - 20} more entries, ${lines.length} total)`;
+    },
+  },
+  // Grep output: Cap at 10 matches + count of remaining
+  // Matches "filename:linenum:" or "linenum:" patterns (grep -n format)
+  {
+    detect: /^[^\s]+:\d+:[^\d]|^\d+[:\-].{10,}/m,
+    compress: (text) => {
+      const lines = text.trim().split("\n");
+      if (lines.length <= 10) return text;
+      return lines.slice(0, 10).join("\n") + `\n... (${lines.length - 10} more matches, ${lines.length} total)`;
+    },
+  },
+  // Large file content (>150 lines, not matched by prior rules): keep head + tail
+  {
+    detect: (text) => {
+      const lines = text.split("\n");
+      return lines.length > 150;
+    },
+    compress: (text) => {
+      const lines = text.split("\n");
+      if (lines.length <= 150) return text;
+      return lines.slice(0, 30).join("\n") +
+        `\n... (${lines.length - 40} lines omitted)\n` +
+        lines.slice(-10).join("\n");
     },
   },
 ];
@@ -247,6 +298,19 @@ export function compressProse(text) {
 }
 
 /**
+ * Detect whether text content matches tool output patterns.
+ * Reusable for classification without triggering compression.
+ */
+export function isToolOutputContent(text) {
+  if (!text || text.length < 100) return false;
+  return TOOL_OUTPUT_RULES.some(rule => {
+    return typeof rule.detect === "function"
+      ? rule.detect(text)
+      : rule.detect.test(text);
+  });
+}
+
+/**
  * Compress tool output (git, npm, test results, file listings).
  * Uses pattern detection to apply appropriate compression strategy.
  */
@@ -272,12 +336,8 @@ export function compressToolOutput(text) {
 export function compressMessage(content) {
   if (!content || typeof content !== "string") return content;
 
-  // Detect if this is tool output vs prose
-  const isToolOutput = TOOL_OUTPUT_RULES.some(rule => {
-    return typeof rule.detect === "function"
-      ? rule.detect(content)
-      : rule.detect.test(content);
-  });
+  // Detect if this is tool output vs prose (reuses isToolOutputContent)
+  const isToolOutput = isToolOutputContent(content);
 
   if (isToolOutput) {
     return compressToolOutput(content);
@@ -299,6 +359,7 @@ export function compressMessage(content) {
 export function compressMessages(messages) {
   if (!Array.isArray(messages)) return messages;
 
+  let systemIdx = 0;
   return messages.map((msg) => {
     if (!msg || !msg.content) return msg;
 
@@ -308,14 +369,19 @@ export function compressMessages(messages) {
     // Handle string content
     if (typeof msg.content === "string") {
       if (msg.role === "system") {
-        // Light compression for system prompts — only whitespace + replacements
-        let compressed = msg.content;
-        for (const [pattern, replacement] of REPLACEMENTS) {
-          compressed = compressed.replace(pattern, replacement);
+        systemIdx++;
+        if (systemIdx === 1) {
+          // First system message: light compression only (core instruction prompt)
+          let compressed = msg.content;
+          for (const [pattern, replacement] of REPLACEMENTS) {
+            compressed = compressed.replace(pattern, replacement);
+          }
+          compressed = compressed.replace(MULTI_SPACE, " ");
+          compressed = compressed.replace(MULTI_NEWLINE, "\n\n");
+          return { ...msg, content: compressed };
         }
-        compressed = compressed.replace(MULTI_SPACE, " ");
-        compressed = compressed.replace(MULTI_NEWLINE, "\n\n");
-        return { ...msg, content: compressed };
+        // Subsequent system messages: full prose compression (injected context)
+        return { ...msg, content: compressProse(msg.content) };
       }
 
       return { ...msg, content: compressMessage(msg.content) };
@@ -406,11 +472,39 @@ export function compressToolSchemas(tools) {
 }
 
 /**
- * Progressive message aging — compress older messages more aggressively.
+ * Classify a message's content type for aging decisions.
+ * Returns: "tool-exploration" | "error" | "edit" | "user-instruction" | "other"
+ */
+function classifyMessageContent(content) {
+  if (!content || typeof content !== "string") return "other";
+
+  // Error/failure output — preserve more (critical context)
+  if (/(?:error|Error|ERR!|FAIL|traceback|TypeError|ReferenceError|SyntaxError|Exception)/m.test(content)) {
+    return "error";
+  }
+
+  // Edit confirmations — diff-like or creation language
+  if (/^(?:diff --git|@@|\+\+\+|---)/m.test(content) ||
+      /(?:created|modified|updated|wrote|saved)\s+(?:file|successfully)/i.test(content)) {
+    return "edit";
+  }
+
+  // Tool exploration output — reuses isToolOutputContent()
+  if (isToolOutputContent(content)) return "tool-exploration";
+
+  return "user-instruction";
+}
+
+/**
+ * Progressive message aging — compress older messages based on content type.
  * Recent messages (last N) get normal compression.
- * Older messages get heavy compression (remove articles, more filler, truncate).
+ * Older messages get content-aware aging:
+ *   - Tool exploration: aggressive (first+last line, cap 200 chars)
+ *   - Errors: preserved (cap 800 chars)
+ *   - Edits: medium (header + summary, cap 300 chars)
+ *   - User instructions: light (compressProse only, no truncation)
  *
- * Inspired by Code Mode insight: LLMs rarely need full context from early turns.
+ * Inspired by Focus paper: exploration outputs are highest-waste content.
  */
 export function compressWithAging(messages, { recentCount = 6 } = {}) {
   if (!Array.isArray(messages) || messages.length <= recentCount) {
@@ -420,17 +514,63 @@ export function compressWithAging(messages, { recentCount = 6 } = {}) {
   const oldMessages = messages.slice(0, -recentCount);
   const recentMessages = messages.slice(-recentCount);
 
-  // Heavy compression for old messages
+  // Content-aware compression for old messages
   const agedOld = oldMessages.map((msg) => {
     if (!msg || !msg.content || msg.role === "assistant") return msg;
 
     if (typeof msg.content === "string") {
-      // For old user messages: aggressive truncation
-      let compressed = compressMessage(msg.content);
-      // Further truncate if still long
-      if (compressed.length > 500) {
-        compressed = compressed.slice(0, 500) + "... [truncated]";
+      const type = classifyMessageContent(msg.content);
+      let compressed;
+
+      switch (type) {
+        case "tool-exploration":
+          // Aggressive: first + last line, cap at 200 chars
+          compressed = compressMessage(msg.content);
+          if (compressed.length > 200) {
+            const lines = compressed.split("\n").filter(l => l.trim());
+            if (lines.length > 2) {
+              compressed = lines[0] + "\n...\n" + lines[lines.length - 1];
+            }
+            if (compressed.length > 200) {
+              compressed = compressed.slice(0, 200) + "... [aged]";
+            }
+          }
+          break;
+
+        case "error":
+          // Preserve more — errors are critical context
+          compressed = compressMessage(msg.content);
+          if (compressed.length > 800) {
+            compressed = compressed.slice(0, 800) + "... [truncated]";
+          }
+          break;
+
+        case "edit":
+          // Medium: keep header + summary, cap at 300 chars
+          compressed = compressMessage(msg.content);
+          if (compressed.length > 300) {
+            const lines = compressed.split("\n");
+            compressed = lines.slice(0, 3).join("\n");
+            if (compressed.length > 300) {
+              compressed = compressed.slice(0, 300) + "... [aged]";
+            }
+          }
+          break;
+
+        case "user-instruction":
+          // Light: prose compression only, no truncation
+          compressed = compressProse(msg.content);
+          break;
+
+        default:
+          // Fallback: standard compression + moderate truncation
+          compressed = compressMessage(msg.content);
+          if (compressed.length > 500) {
+            compressed = compressed.slice(0, 500) + "... [truncated]";
+          }
+          break;
       }
+
       return { ...msg, content: compressed };
     }
 
@@ -474,7 +614,7 @@ export function deduplicateMessages(messages) {
   });
 }
 
-function simpleHash(str) {
+export function simpleHash(str) {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
     hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
