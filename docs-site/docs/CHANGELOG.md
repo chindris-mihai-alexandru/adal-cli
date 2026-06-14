@@ -8,6 +8,22 @@ slug: /changelog
 
 All notable changes to AdaL CLI will be documented in this file.
 
+## [1.2.0] - 2026-05-20
+
+- (Preview) [Desktop App](https://docs.sylph.ai/getting-started/desktop-app) now available - download app and open with icon or `/ide` command
+- (Preview) Self-Review Agent available in Desktop App - open your PR and the agent auto-clusters and explains huge reviews for you
+- Smarter multi-turn conversations with extended thinking models
+- More reliable command execution with clearer error reporting when shell commands fail
+- Images you paste or upload persist correctly when resuming or switching sessions
+
+## [1.1.4] - 2026-05-15
+
+- (Preview) `/ide` command now available - open your session in the browser with one keystroke
+- (Preview) self-review agent feature now available in `/ide` - open your PR and the agent auto-clusters and explains huge reviews for you
+- More reliable auto-updates on Windows
+- Improved instruction following and tool accuracy across all models
+- Improved cross-platform reliability on Windows with non-UTF-8 locales
+
 ## [1.1.3] - 2026-05-09
 
 - Unified tool expand/collapse toggle for cleaner message display
